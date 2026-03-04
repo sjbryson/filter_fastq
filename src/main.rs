@@ -1,78 +1,159 @@
-
 use clap::Parser;
 use flate2::read::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Write, Read};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about)]
+#[command(author, version, about = "Fast FASTQ pair filtering by Read ID")]
 struct Args {
-    /// read 1 FASTQ file
+    /// Read 1 FASTQ file (can be .gz)
     #[arg(short = '1', long)]
     r1: String,
 
-    /// read 2 FASTQ file
+    /// Read 2 FASTQ file (can be .gz)
     #[arg(short = '2', long)]
     r2: String,
 
-    /// txt file with read IDs to filter (one per line)
+    /// Text file with read IDs to filter (if omitted, reads from stdin)
     #[arg(short = 'f', long)]
-    filter: String,
+    filter: Option<String>,
 
-    /// output prefix
+    /// Output prefix
     #[arg(short = 'o', long)]
     out_prefix: String,
 
-    /// keep records in filter list instead of excluding
-    #[arg(long)]
-    invert: bool,
+    /// Keep only records in the filter list
+    #[arg(long, conflicts_with = "exclude")]
+    keep: bool,
 
-    /// write to fastq.gz instead of fastq
+    /// Exclude records in the filter list (default)
+    #[arg(long, conflicts_with = "keep")]
+    exclude: bool,
+
+    /// Compress output as fastq.gz
     #[arg(long)]
     gz: bool,
+
+    /// Use R2 to extract sequence ID for filtering (default uses R1)
+    #[arg(long)]
+    check_r2: bool,
 }
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
 
-    let filter_ids = load_filter_ids(&args.filter)?;
+    // 1. Load Filter IDs (from File or Stdin)
+    let filter_ids = load_filter_ids(args.filter)?;
 
+    // 2. Open Input Readers
     let r1 = open_fastq(&args.r1)?;
     let r2 = open_fastq(&args.r2)?;
 
+    // 3. Prepare Output Writers
     let ext = if args.gz { "fastq.gz" } else { "fastq" };
+    let mut out_r1 = open_writer(&format!("{}_R1.{}", args.out_prefix, ext), args.gz)?;
+    let mut out_r2 = open_writer(&format!("{}_R2.{}", args.out_prefix, ext), args.gz)?;
 
-    let out_r1 = open_writer(
-        &format!("{}_R1.{}", args.out_prefix, ext),
-        args.gz,
-    )?;
-
-    let out_r2 = open_writer(
-        &format!("{}_R2.{}", args.out_prefix, ext),
-        args.gz,
-    )?;
-
-    filter_fastq_pairs(
-        r1,
-        r2,
-        out_r1,
-        out_r2,
-        &filter_ids,
-        args.invert,
-    )?;
+    // 4. Execute optimized filter path
+    if args.keep {
+        filter_keep(r1, r2, &mut out_r1, &mut out_r2, &filter_ids, args.check_r2)?;
+    } else {
+        filter_exclude(r1, r2, &mut out_r1, &mut out_r2, &filter_ids, args.check_r2)?;
+    }
 
     Ok(())
 }
 
+// --- CORE FILTER FUNCTIONS ---
+
+/// KEEP MODE: Only write records present in filter_ids. Stop early if all found.
+fn filter_keep<R: BufRead, W: Write>(
+    r1: R, r2: R, mut w1: W, mut w2: W,
+    filter_ids: &HashSet<String>, check_r2: bool
+) -> io::Result<()> {
+    let mut r1_lines = r1.lines();
+    let mut r2_lines = r2.lines();
+    let mut found_count = 0;
+    let mut total_processed = 0;
+    let total_to_find = filter_ids.len();
+
+    while found_count < total_to_find {
+        let (Some(rec1), Some(rec2)) = (read_fastq_record(&mut r1_lines)?, read_fastq_record(&mut r2_lines)?) 
+            else { break; };
+        
+        total_processed += 1;
+        let header = if check_r2 { &rec2[0] } else { &rec1[0] };
+        
+        if filter_ids.contains(&extract_id(header)) {
+            write_record(&mut w1, &rec1)?;
+            write_record(&mut w2, &rec2)?;
+            found_count += 1;
+        }
+    }
+
+    report_summary(found_count, total_to_find, total_processed);
+    Ok(())
+}
+
+/// EXCLUDE MODE: Write records NOT in filter_ids. Fast-path once all targets excluded.
+fn filter_exclude<R: BufRead, W: Write>(
+    r1: R, r2: R, mut w1: W, mut w2: W,
+    filter_ids: &HashSet<String>, check_r2: bool
+) -> io::Result<()> {
+    let mut r1_lines = r1.lines();
+    let mut r2_lines = r2.lines();
+    let mut found_count = 0;
+    let mut total_processed = 0;
+    let total_to_find = filter_ids.len();
+
+    loop {
+        let (Some(rec1), Some(rec2)) = (read_fastq_record(&mut r1_lines)?, read_fastq_record(&mut r2_lines)?) 
+            else { break; };
+
+        total_processed += 1;
+
+        if found_count < total_to_find {
+            let header = if check_r2 { &rec2[0] } else { &rec1[0] };
+            if filter_ids.contains(&extract_id(header)) {
+                found_count += 1;
+                continue; 
+            }
+        }
+
+        write_record(&mut w1, &rec1)?;
+        write_record(&mut w2, &rec2)?;
+    }
+
+    report_summary(found_count, total_to_find, total_processed);
+    Ok(())
+}
+
+// --- HELPERS ---
+
+fn load_filter_ids(path: Option<String>) -> io::Result<HashSet<String>> {
+    let mut ids = HashSet::new();
+    let reader: Box<dyn BufRead> = match path {
+        Some(p) => Box::new(BufReader::new(File::open(p)?)),
+        None => Box::new(BufReader::new(io::stdin())),
+    };
+
+    for line in reader.lines() {
+        let l = line?;
+        let id = l.trim().trim_start_matches('@').split_whitespace().next().unwrap_or("").to_string();
+        if !id.is_empty() {
+            ids.insert(id);
+        }
+    }
+    Ok(ids)
+}
+
 fn open_fastq(path: &str) -> io::Result<BufReader<Box<dyn Read>>> {
     let file = File::open(path)?;
-
     if path.ends_with(".gz") {
-        let decoder = MultiGzDecoder::new(file);
-        Ok(BufReader::new(Box::new(decoder)))
+        Ok(BufReader::new(Box::new(MultiGzDecoder::new(file))))
     } else {
         Ok(BufReader::new(Box::new(file)))
     }
@@ -80,74 +161,15 @@ fn open_fastq(path: &str) -> io::Result<BufReader<Box<dyn Read>>> {
 
 fn open_writer(path: &str, gz: bool) -> io::Result<BufWriter<Box<dyn Write>>> {
     let file = File::create(path)?;
-
     if gz {
-        let encoder = GzEncoder::new(file, Compression::default());
-        Ok(BufWriter::new(Box::new(encoder)))
+        Ok(BufWriter::new(Box::new(GzEncoder::new(file, Compression::default()))))
     } else {
         Ok(BufWriter::new(Box::new(file)))
     }
 }
 
-fn load_filter_ids(path: &str) -> io::Result<HashSet<String>> {
-    let reader = BufReader::new(File::open(path)?);
-    let mut ids = HashSet::new();
-
-    for line in reader.lines() {
-        let id = line?.trim_start_matches('@').to_string();
-        ids.insert(id);
-    }
-
-    Ok(ids)
-}
-
 fn extract_id(header: &str) -> String {
-    header
-        .trim_start_matches('@')
-        .split_whitespace()
-        .next()
-        .unwrap()
-        .to_string()
-}
-
-fn filter_fastq_pairs<R: BufRead, W: Write>(
-    r1: R,
-    r2: R,
-    mut w1: W,
-    mut w2: W,
-    filter_ids: &HashSet<String>,
-    invert: bool,
-) -> io::Result<()> {
-    let mut r1_lines = r1.lines();
-    let mut r2_lines = r2.lines();
-
-    loop {
-        let rec1 = read_fastq_record(&mut r1_lines)?;
-        let rec2 = read_fastq_record(&mut r2_lines)?;
-
-        match (rec1, rec2) {
-            (Some(r1_rec), Some(r2_rec)) => {
-                let id = extract_id(&r1_rec[0]);
-                let in_filter = filter_ids.contains(&id);
-
-                let keep = if invert { in_filter } else { !in_filter };
-
-                if keep {
-                    write_record(&mut w1, &r1_rec)?;
-                    write_record(&mut w2, &r2_rec)?;
-                }
-            }
-            (None, None) => break,
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "R1 and R2 FASTQ files differ in length",
-                ));
-            }
-        }
-    }
-
-    Ok(())
+    header.trim_start_matches('@').split_whitespace().next().unwrap_or("").to_string()
 }
 
 fn read_fastq_record<I>(lines: &mut I) -> io::Result<Option<Vec<String>>>
@@ -155,25 +177,12 @@ where
     I: Iterator<Item = io::Result<String>>,
 {
     let mut record = Vec::with_capacity(4);
-
     for i in 0..4 {
         match lines.next() {
             Some(line) => record.push(line?),
-            None => {
-                if i == 0 {
-                    // true EOF
-                    return Ok(None);
-                } else {
-                    // mid-record EOF -> corrupt FASTQ
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "Incomplete FASTQ record",
-                    ));
-                }
-            }
+            None => return if i == 0 { Ok(None) } else { Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Malformed FASTQ")) },
         }
     }
-
     Ok(Some(record))
 }
 
@@ -182,4 +191,13 @@ fn write_record<W: Write>(writer: &mut W, record: &[String]) -> io::Result<()> {
         writeln!(writer, "{line}")?;
     }
     Ok(())
+}
+
+fn report_summary(found: usize, total: usize, processed: usize) {
+    eprintln!("\n--- Process Summary ---");
+    eprintln!("Total records scanned: {}", processed);
+    eprintln!("IDs matched: {} of {}", found, total);
+    if found < total {
+        eprintln!("WARNING: {} IDs from the filter list were not found.", total - found);
+    }
 }

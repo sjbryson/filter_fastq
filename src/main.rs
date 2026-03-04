@@ -63,9 +63,8 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-// --- CORE FILTER FUNCTIONS ---
 
-/// KEEP MODE: Only write records present in filter_ids. Stop early if all found.
+// KEEP MODE: Only write records present in filter_ids. Stop early if all found.
 fn filter_keep<R: BufRead, W: Write>(
     r1: R, r2: R, mut w1: W, mut w2: W,
     filter_ids: &HashSet<String>
@@ -91,7 +90,7 @@ fn filter_keep<R: BufRead, W: Write>(
     Ok(())
 }
 
-/// EXCLUDE MODE: Write records NOT in filter_ids. Fast-path once all targets excluded.
+// EXCLUDE MODE: Write records NOT in filter_ids. Fast-path once all targets excluded.
 fn filter_exclude<R: BufRead, W: Write>(
     r1: R, r2: R, mut w1: W, mut w2: W,
     filter_ids: &HashSet<String>
@@ -119,9 +118,6 @@ fn filter_exclude<R: BufRead, W: Write>(
     Ok(())
 }
 
-// --- HELPERS ---
-
-/// Unified ID cleaning: splits at whitespace and trims /1 or /2
 fn clean_id(id: &str) -> String {
     id.trim_start_matches('@')
         .split_whitespace()

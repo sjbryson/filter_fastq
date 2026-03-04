@@ -41,10 +41,10 @@ Or, with gzip enabled:
 
 - One read ID per line
 - Leading @ is optional
-- Rean numbers "/1" or "/2" are ignored
+- Read numbers "/1" or "/2" are ignored
 - Anything after first whitespace is ignored
 
-#### Example:
+#### ID List Styles:
 
  ```
 		@read123
@@ -52,7 +52,7 @@ Or, with gzip enabled:
 		read789/1
 ```
 
-#### Example
+#### Example Usage
 Remove reads listed in bad_ids.txt:
 
 ```  

@@ -14,7 +14,7 @@ The binary will be located at:
 			-f , --filter ids.txt [Text file of read IDs to filter (one per line)]\
 			-o, --out-prefix [Prefix for output files]
 ```
-## Options
+### Options
 
 ```
 		--exclude <default>[Exclude reads present in the filter list]
@@ -52,7 +52,7 @@ Or, with gzip enabled:
 		read789/1
 ```
 
-#### Example Usage
+### Example Usage
 Remove reads listed in bad_ids.txt:
 
 ```  

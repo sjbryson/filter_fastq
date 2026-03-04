@@ -14,12 +14,12 @@ The binary will be located at:
 			-f , --filter ids.txt [Text file of read IDs to filter (one per line)]\
 			-o, --out-prefix [Prefix for output files]
 ```
-### Options
+#### [Options]
 
 ```
 		--exclude <default>[Exclude reads present in the filter list]
 		--keep [Keep only reads present in the filter list]
-		--gz Write gzipped FASTQ output
+		--gz [Write gzipped FASTQ output]
 ```
 
  ### Output

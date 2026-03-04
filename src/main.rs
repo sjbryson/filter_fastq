@@ -36,10 +36,6 @@ struct Args {
     /// Compress output as fastq.gz
     #[arg(long)]
     gz: bool,
-
-    /// Use R2 to extract sequence ID for filtering (default uses R1)
-    #[arg(long)]
-    check_r2: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -59,9 +55,9 @@ fn main() -> io::Result<()> {
 
     // 4. Execute optimized filter path
     if args.keep {
-        filter_keep(r1, r2, &mut out_r1, &mut out_r2, &filter_ids, args.check_r2)?;
+        filter_keep(r1, r2, &mut out_r1, &mut out_r2, &filter_ids)?;
     } else {
-        filter_exclude(r1, r2, &mut out_r1, &mut out_r2, &filter_ids, args.check_r2)?;
+        filter_exclude(r1, r2, &mut out_r1, &mut out_r2, &filter_ids)?;
     }
 
     Ok(())
@@ -72,7 +68,7 @@ fn main() -> io::Result<()> {
 /// KEEP MODE: Only write records present in filter_ids. Stop early if all found.
 fn filter_keep<R: BufRead, W: Write>(
     r1: R, r2: R, mut w1: W, mut w2: W,
-    filter_ids: &HashSet<String>, check_r2: bool
+    filter_ids: &HashSet<String>
 ) -> io::Result<()> {
     let mut r1_lines = r1.lines();
     let mut r2_lines = r2.lines();
@@ -85,15 +81,12 @@ fn filter_keep<R: BufRead, W: Write>(
             else { break; };
         
         total_processed += 1;
-        let header = if check_r2 { &rec2[0] } else { &rec1[0] };
-        
-        if filter_ids.contains(&extract_id(header)) {
+        if filter_ids.contains(&clean_id(&rec1[0])) {
             write_record(&mut w1, &rec1)?;
             write_record(&mut w2, &rec2)?;
             found_count += 1;
         }
     }
-
     report_summary(found_count, total_to_find, total_processed);
     Ok(())
 }
@@ -101,7 +94,7 @@ fn filter_keep<R: BufRead, W: Write>(
 /// EXCLUDE MODE: Write records NOT in filter_ids. Fast-path once all targets excluded.
 fn filter_exclude<R: BufRead, W: Write>(
     r1: R, r2: R, mut w1: W, mut w2: W,
-    filter_ids: &HashSet<String>, check_r2: bool
+    filter_ids: &HashSet<String>
 ) -> io::Result<()> {
     let mut r1_lines = r1.lines();
     let mut r2_lines = r2.lines();
@@ -114,24 +107,30 @@ fn filter_exclude<R: BufRead, W: Write>(
             else { break; };
 
         total_processed += 1;
-
-        if found_count < total_to_find {
-            let header = if check_r2 { &rec2[0] } else { &rec1[0] };
-            if filter_ids.contains(&extract_id(header)) {
-                found_count += 1;
-                continue; 
-            }
+        if found_count < total_to_find && filter_ids.contains(&clean_id(&rec1[0])) {
+            found_count += 1;
+            continue; 
         }
 
         write_record(&mut w1, &rec1)?;
         write_record(&mut w2, &rec2)?;
     }
-
     report_summary(found_count, total_to_find, total_processed);
     Ok(())
 }
 
 // --- HELPERS ---
+
+/// Unified ID cleaning: splits at whitespace and trims /1 or /2
+fn clean_id(id: &str) -> String {
+    id.trim_start_matches('@')
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_end_matches("/1")
+        .trim_end_matches("/2")
+        .to_string()
+}
 
 fn load_filter_ids(path: Option<String>) -> io::Result<HashSet<String>> {
     let mut ids = HashSet::new();
@@ -139,13 +138,10 @@ fn load_filter_ids(path: Option<String>) -> io::Result<HashSet<String>> {
         Some(p) => Box::new(BufReader::new(File::open(p)?)),
         None => Box::new(BufReader::new(io::stdin())),
     };
-
     for line in reader.lines() {
         let l = line?;
-        let id = l.trim().trim_start_matches('@').split_whitespace().next().unwrap_or("").to_string();
-        if !id.is_empty() {
-            ids.insert(id);
-        }
+        let id = clean_id(&l);
+        if !id.is_empty() { ids.insert(id); }
     }
     Ok(ids)
 }
@@ -166,10 +162,6 @@ fn open_writer(path: &str, gz: bool) -> io::Result<BufWriter<Box<dyn Write>>> {
     } else {
         Ok(BufWriter::new(Box::new(file)))
     }
-}
-
-fn extract_id(header: &str) -> String {
-    header.trim_start_matches('@').split_whitespace().next().unwrap_or("").to_string()
 }
 
 fn read_fastq_record<I>(lines: &mut I) -> io::Result<Option<Vec<String>>>

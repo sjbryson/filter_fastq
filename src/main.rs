@@ -17,7 +17,7 @@ struct Args {
     #[arg(short = '2', long)]
     r2: String,
 
-    /// Text file with read IDs to filter
+    /// Text file with read IDs to filter (if omitted, reads from stdin)
     #[arg(short = 'f', long)]
     filter: Option<String>,
 
@@ -41,19 +41,19 @@ struct Args {
 fn main() -> io::Result<()> {
     let args = Args::parse();
 
-    /// 1. Load Filter IDs (from File or Stdin)
+    // 1. Load Filter IDs (from File or Stdin)
     let filter_ids = load_filter_ids(args.filter)?;
 
-    /// 2. Open Input Readers
+    // 2. Open Input Readers
     let r1 = open_fastq(&args.r1)?;
     let r2 = open_fastq(&args.r2)?;
 
-    /// 3. Prepare Output Writers
+    // 3. Prepare Output Writers
     let ext = if args.gz { "fastq.gz" } else { "fastq" };
     let mut out_r1 = open_writer(&format!("{}_R1.{}", args.out_prefix, ext), args.gz)?;
     let mut out_r2 = open_writer(&format!("{}_R2.{}", args.out_prefix, ext), args.gz)?;
 
-    /// 4. Execute optimized filter path
+    // 4. Execute optimized filter path
     if args.keep {
         filter_keep(r1, r2, &mut out_r1, &mut out_r2, &filter_ids)?;
     } else {
@@ -64,7 +64,7 @@ fn main() -> io::Result<()> {
 }
 
 
-/// KEEP MODE: Only write records present in filter_ids. Stop early if all found.
+// KEEP MODE: Only write records present in filter_ids. Stop early if all found.
 fn filter_keep<R: BufRead, W: Write>(
     r1: R, 
     r2: R, 
@@ -93,7 +93,7 @@ fn filter_keep<R: BufRead, W: Write>(
     Ok(())
 }
 
-/// EXCLUDE MODE: Write records NOT in filter_ids. Fast-path once all targets excluded.
+// EXCLUDE MODE: Write records NOT in filter_ids. Fast-path once all targets excluded.
 fn filter_exclude<R: BufRead, W: Write>(
     r1: R, 
     r2: R, 

@@ -1,6 +1,8 @@
 [package]
 name = "filter_fastq"
-version = "0.1.1"
+version = "0.1.0"
+authors = ["Samuel Bryson <sjbryson@g.ucla.edu>"]
+description = "A tool for filtering paired FASTQ files by read IDs."
 edition = "2024"
 
 [dependencies]

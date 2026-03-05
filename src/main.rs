@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "FASTQ pair filtering by Read ID")]
+#[command(author, version, about)]
 struct Args {
     /// Read 1 FASTQ file (can be .gz)
     #[arg(short = '1', long)]
